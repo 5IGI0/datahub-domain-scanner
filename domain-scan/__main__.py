@@ -1,0 +1,113 @@
+import whois
+import dns.resolver
+import json
+from dns_scanner import dns_scan
+from http_scanner import http_scan
+from datetime import datetime, timezone
+from constants import SCANNER_VER, THREAD_COUNT
+import threading
+import queue
+import os
+import traceback
+
+os.makedirs("./crash-reports/", exist_ok=True)
+
+dns.resolver.default_resolver = dns.resolver.Resolver(configure=False)
+dns.resolver.default_resolver.nameservers = ["1.1.1.1"]
+dns.resolver.default_resolver.timeout=5.0
+dns.resolver.default_resolver.lifetime=5.0
+
+def start_scan(domain):
+    data = {
+    "domain": domain,
+    "version": SCANNER_VER,
+    "tags": [],
+    "services": {},
+    "meta": {
+        "nameservers": dns.resolver.default_resolver.nameservers,
+        "started_at": datetime.now(timezone.utc).isoformat()
+    }}
+
+    try:
+        # imagine going to jail because of DNS leak, lol
+        # TODO: support hidden-services
+        if (
+            domain == "" or
+            domain.endswith(".onion")   or
+            domain.endswith(".onion.")  or
+            domain.endswith(".i2p")     or
+            domain.endswith(".i2p.")    or
+            # TODO: check if .zero is zeronet's TLD
+            domain.endswith(".zero")    or
+            domain.endswith(".zero.")):
+            data["meta"]["ended_at"] = datetime.now(timezone.utc).isoformat()
+            return data
+
+        print("whois", flush=True)
+        try:
+            data["whois"] = whois.whois(domain).text
+        except:
+            pass
+        print("dns_scan", flush=True)
+        dns_scan(data, domain)
+
+        # no point to try to perform service scan if no IP is associated
+        if "IPv4" in data["tags"] or "IPv6" in data["tags"]:
+            print("http", flush=True)
+            http_scan(data, domain, False)
+            print("http", flush=True)
+            http_scan(data, domain, True)
+    except Exception as e:
+        with open(f"crash-reports/{datetime.now().isoformat()}-{domain[:30]}.txt", "w") as f:
+            traceback.TracebackException.from_exception(e).print(file=f)
+            f.write("\n\n")
+            f.write("scan data: ")
+            try:
+                json.dump(data, f)
+            except:
+                f.write("[ERROR]\n")
+                f.write("stringified: "+str(data)+"\n")
+        data["meta"]["error"] = str(e)
+        data["tags"].append("crashed-scan")
+    data["meta"]["ended_at"] = datetime.now(timezone.utc).isoformat()
+    return data
+
+if __name__ == "__main__":
+    import sys
+    import requests
+    import time
+
+    if sys.argv[1] == "scan":
+        print(json.dumps(start_scan(sys.argv[2]), indent=4))
+    elif sys.argv[1] == "worker":
+        domain_queue = queue.Queue()
+
+        def worker():
+            while 1:
+                domain = domain_queue.get()
+                data = start_scan(domain)
+                print("data: ", data)
+                print("response:", requests.post(sys.argv[2]+"/api/v1/domains/add_scan", json=data).text, flush=True)
+
+        threads = [
+            threading.Thread(target=worker,args=())for _ in range(THREAD_COUNT)
+        ]
+
+        for thread in threads:
+            thread.start()
+
+        while True:
+            print("fetching more domains...")
+            response = requests.get(sys.argv[2]+"/api/v1/domains/outdated").json()
+
+            if len(response["data"]) == 0:
+                print("no outdated domain, waiting...")
+                time.sleep(120)
+                continue
+
+            for domain in response["data"]:
+                domain_queue.put(domain)
+
+            while not domain_queue.empty():
+                time.sleep(5)
+            time.sleep(20) # waiting for all scans to finish
