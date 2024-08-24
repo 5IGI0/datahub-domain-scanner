@@ -13,7 +13,7 @@ import traceback
 os.makedirs("./crash-reports/", exist_ok=True)
 
 dns.resolver.default_resolver = dns.resolver.Resolver(configure=False)
-dns.resolver.default_resolver.nameservers = ["1.1.1.1"]
+dns.resolver.default_resolver.nameservers = ["8.8.8.8"]
 dns.resolver.default_resolver.timeout=5.0
 dns.resolver.default_resolver.lifetime=5.0
 
@@ -23,6 +23,7 @@ def start_scan(domain):
     "version": SCANNER_VER,
     "tags": [],
     "services": {},
+    "records": {},
     "meta": {
         "nameservers": dns.resolver.default_resolver.nameservers,
         "started_at": datetime.now(timezone.utc).isoformat()
@@ -82,12 +83,21 @@ if __name__ == "__main__":
     elif sys.argv[1] == "worker":
         domain_queue = queue.Queue()
 
+        current_domain_lock = threading.Lock()
+        current_domain_scans = []
         def worker():
             while 1:
                 domain = domain_queue.get()
+                with current_domain_lock:
+                    if domain in current_domain_scans:
+                        continue
+                    else:
+                        current_domain_scans.append(domain)
                 data = start_scan(domain)
                 print("data: ", data)
                 print("response:", requests.post(sys.argv[2]+"/api/v1/domains/add_scan", json=data).text, flush=True)
+                with current_domain_lock:
+                    current_domain_scans.remove(domain)
 
         threads = [
             threading.Thread(target=worker,args=())for _ in range(THREAD_COUNT)
@@ -102,7 +112,7 @@ if __name__ == "__main__":
 
             if len(response["data"]) == 0:
                 print("no outdated domain, waiting...")
-                time.sleep(120)
+                time.sleep(30)
                 continue
 
             for domain in response["data"]:

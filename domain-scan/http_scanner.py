@@ -8,6 +8,14 @@ from atomic import SafeFileAppender
 
 # TODO: decode domains (IDNA) before comparing them
 
+NODEINFO_PREFERED_VERSIONS=[
+    # lower index = preferred
+    "http://nodeinfo.diaspora.software/ns/schema/2.1",
+    "http://nodeinfo.diaspora.software/ns/schema/2.0",
+    "http://nodeinfo.diaspora.software/ns/schema/1.1",
+    "http://nodeinfo.diaspora.software/ns/schema/1.0",
+]
+
 links_list = SafeFileAppender("links.txt")
 
 META_PROPERTY_BLACKLIST=[
@@ -55,15 +63,17 @@ def http_scan(data,host, scan_on_https):
         old_respone = response
         response, tag = follow_local_redirections(schema, host, f"{schema}://{host}", response, sess)
         if response is None:
-            home_page_scan(data, host, schema, sess, old_respone)
-            robots_txt_scan(data, host, schema, sess)
             data["services"][schema]["tags"].append(tag)
-            return
-    
-    print("robots", flush=True)
-    robots_txt_scan(data, host, schema, sess)
+            response = old_respone
+
     print("home page", flush=True)
     home_page_scan(data, host, schema, sess, response)
+    print("robots", flush=True)
+    robots_txt_scan(data, host, schema, sess)
+    print("matrix", flush=True)
+    matrix_chat_check(data, host, schema, sess)
+    print("nodeinfo", flush=True)
+    nodeinfo_fetch(data, host, schema, sess)
 
 def check_redirection(data, host, schema, sess, response):
     location = response.headers.get("Location")
@@ -162,16 +172,122 @@ def __is_external_link(link, host):
     return not  (host_splitted[0] == netloc_splitted[0] and
                 host_splitted[1] == netloc_splitted[1])
 
+# TODO: follow redirections
+def nodeinfo_fetch(data, host, schema, sess):
+    try:
+        response = sess.get(f"{schema}://{host}/.well-known/nodeinfo", **default_request_config)
+    except:
+        return
+
+    try:
+        response = response.json()
+        links = response["links"]
+        assert(isinstance(links, list))
+    except:
+        return
+
+    data["services"][schema]["nodeinfo_list"] = response
+    schema_links = {}
+    for link in links:
+        schema_links[str(link["rel"])] = str(link["href"])
+
+    for preferred in NODEINFO_PREFERED_VERSIONS:
+        if not preferred in schema_links:
+            continue
+
+        link = schema_links[preferred]
+
+        if link.startswith("//"):
+            continue
+        elif link.startswith("/"):
+            link = f"{schema}://{host}"+link
+        elif not "://" in link:
+            link = f"{schema}://{host}/{link}"
+        elif not link.startswith(f"{schema}://{host}/"):
+            continue
+
+        try:
+            response = sess.get(link, **default_request_config).json()
+
+            # some asserts to be sure
+            assert(isinstance(response, dict))
+            assert("version" in response)
+            assert("software" in response)
+            assert("services" in response)
+        except:
+            continue
+
+        data["services"][schema]["nodeinfo"] = response
+        data["services"][schema]["tags"].append("has-nodeinfo")
+        break
+
+def __matrix_wellknown_check(data, host, schema, sess):
+    try:
+        response = sess.get(f"{schema}://{host}/.well-known/matrix/client", **default_request_config)
+    except:
+        return f"{schema}://{host}/"
+
+    if response.status_code != 200:
+        return f"{schema}://{host}/"
+
+    try:
+        response = response.json()
+        assert(isinstance(response, dict))
+    except:
+        return f"{schema}://{host}/"
+
+    try:
+        base_url = str(response["m.homeserver"]["base_url"])
+        matrix_data = data["services"][schema].get("matrix", {})
+        matrix_data["wellknown_client"] = response
+        data["services"][schema]["matrix"] = matrix_data
+        data["services"][schema]["tags"].append("matrix-client-wellknown")
+        if base_url.startswith(f"{schema}://{host}/") or base_url == f"{schema}://{host}":
+            return tmp
+        return None
+    except:
+        return f"{schema}://{host}/"
+
+def matrix_chat_check(data, host, schema, sess):
+    base_url = __matrix_wellknown_check(data, host,schema, sess)
+
+    if base_url is None:
+        base_url = f"{schema}://{host}/"
+    
+    try:
+        response = sess.get(f"{base_url}/_matrix/client/versions", **default_request_config).json()
+    except:
+        return
+
+    try:
+        assert(isinstance(response["versions"], list))
+        matrix_data = data["services"][schema].get("matrix", {})
+        matrix_data["client_versions"] = response["versions"]
+        data["services"][schema]["matrix"] = matrix_data
+        data["services"][schema]["tags"].append("matrix-server")
+        assert(isinstance(response["unstable_features"], dict))
+        matrix_data["client_features"] = []
+        for k, v in response["unstable_features"].items():
+            if v:
+                matrix_data["client_features"].append(k)
+        data["services"][schema]["matrix"] = matrix_data
+    except:
+        pass
+
 def home_page_scan(data, host, schema, sess, response):
     data["services"][schema]["path"] = '/'.join(response.url.split("/")[3:])
     data["services"][schema]["status_code"] = response.status_code
     data["services"][schema]["headers"] = dict(response.headers)
-    soup = BeautifulSoup(response.content, "html.parser")
+    data["services"][schema]["title"] = None
+    data["services"][schema]["html_meta"] = []
+    try:
+        soup = BeautifulSoup(response.content, "html.parser")
+    except:
+        return
     try:
         data["services"][schema]["title"] = soup.find("title").get_text()
     except:
-        data["services"][schema]["title"] = ""
-    data["services"][schema]["html_meta"] = []
+        pass
 
     # get metadata
     for meta in soup.find_all("meta"):
