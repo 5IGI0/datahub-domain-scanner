@@ -114,7 +114,7 @@ if __name__ == "__main__":
 
         while True:
             print("fetching more domains...")
-            response = requests.get(sys.argv[2]+"/api/v1/domains/outdated").json()
+            response = requests.get(sys.argv[2]+"/api/v1/domains/outdated", headers={"Authorization": "Bearer "+sys.argv[3]}).json()
 
             if len(response["data"]) == 0:
                 print("no outdated domain, waiting...")
