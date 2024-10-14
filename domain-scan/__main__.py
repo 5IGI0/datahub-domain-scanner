@@ -101,7 +101,7 @@ if __name__ == "__main__":
                         current_domain_scans.append(domain)
                 data = start_scan(domain)
                 print("data: ", data)
-                print("response:", requests.post(sys.argv[2]+"/api/v1/domains/add_scan", json=data).text, flush=True)
+                print("response:", requests.post(sys.argv[2]+"/api/v1/domains/add_scan", headers={"Authorization": "Bearer "+sys.argv[3]}, json=data).text, flush=True)
                 with current_domain_lock:
                     current_domain_scans.remove(domain)
 
