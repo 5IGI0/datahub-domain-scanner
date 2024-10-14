@@ -6,6 +6,7 @@ from public_suffixes_tools import merge_tld
 from certificate_dumper import dump_certificate
 from atomic import SafeFileAppender
 import time
+from constants import TOR_PROXY
 
 # TODO: decode domains (IDNA) before comparing them
 
@@ -48,6 +49,8 @@ def secure_req(sess, *args, **kwargs):
 
 def http_scan(data,host, scan_on_https):
     sess = requests.session()
+    if host.endswith(".onion") or host.endswith(".onion."):
+        sess.proxies.update({"http": TOR_PROXY, "https": TOR_PROXY})
     sess.verify = False
     sess.headers.update(default_headers)
     schema = "http" if not scan_on_https else "https"
@@ -61,7 +64,7 @@ def http_scan(data,host, scan_on_https):
 
     data["services"][schema] = {"tags": []}
 
-    if scan_on_https:
+    if scan_on_https and not host.endswith(".onion"): # TODO: support tor
         data["services"][schema]["certificate"] = dump_certificate(host, 443)
 
     # if we get a redirection, we check for dumb redirection

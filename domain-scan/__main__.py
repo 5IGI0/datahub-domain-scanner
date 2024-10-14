@@ -4,7 +4,7 @@ import json
 from dns_scanner import dns_scan
 from http_scanner import http_scan
 from datetime import datetime, timezone
-from constants import SCANNER_VER, THREAD_COUNT
+from constants import SCANNER_VER, THREAD_COUNT, TOR_PROXY
 import threading
 import queue
 import os
@@ -18,6 +18,7 @@ dns.resolver.default_resolver.timeout=5.0
 dns.resolver.default_resolver.lifetime=5.0
 
 def start_scan(domain):
+    domain = domain.strip()
     data = {
     "domain": domain,
     "version": SCANNER_VER,
@@ -32,28 +33,33 @@ def start_scan(domain):
     try:
         # imagine going to jail because of DNS leak, lol
         # TODO: support hidden-services
+        while len(domain) and domain.endswith("."):
+            domain = domain[:-1]
+
         if (
             domain == "" or
-            domain.endswith(".onion")   or
-            domain.endswith(".onion.")  or
+            (domain.endswith(".onion") and TOR_PROXY is None) or 
             domain.endswith(".i2p")     or
-            domain.endswith(".i2p.")    or
             # TODO: check if .zero is zeronet's TLD
-            domain.endswith(".zero")    or
-            domain.endswith(".zero.")):
+            domain.endswith(".zero")):
             data["meta"]["ended_at"] = datetime.now(timezone.utc).isoformat()
             return data
 
-        print("whois", flush=True)
-        try:
-            data["whois"] = whois.whois(domain).text
-        except:
-            pass
-        print("dns_scan", flush=True)
-        dns_scan(data, domain)
+        if not domain.endswith(".onion"):
+            print("whois", flush=True)
+            try:
+                data["whois"] = whois.whois(domain).text
+            except:
+                pass
+            print("dns_scan", flush=True)
+            dns_scan(data, domain)
+        else:
+            data["whois"] = "[no whois for tor sites]"
+            data["dns_records"] = {}
 
-        # no point to try to perform service scan if no IP is associated
-        if "IPv4" in data["tags"] or "IPv6" in data["tags"]:
+
+        # no point to try to perform service scan if no IP is associated (or tor)
+        if "IPv4" in data["tags"] or "IPv6" in data["tags"] or domain.endswith(".onion"):
             print("http", flush=True)
             http_scan(data, domain, False)
             print("http", flush=True)
