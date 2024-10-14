@@ -5,6 +5,7 @@ from bs4 import BeautifulSoup
 from public_suffixes_tools import merge_tld
 from certificate_dumper import dump_certificate
 from atomic import SafeFileAppender
+import time
 
 # TODO: decode domains (IDNA) before comparing them
 
@@ -31,6 +32,20 @@ default_request_config = {
     "allow_redirects": False
 }
 
+def secure_req(sess, *args, **kwargs):
+    kwargs["stream"] = True 
+    r = sess.get(*args, **kwargs)
+    r._content = b""
+    start = time.time()
+    for chunk in r.iter_content(1024):
+
+        r._content += chunk
+        if len(r.content) > 5_000_000 or (time.time() - start) > 20:
+            break
+
+    r.close()
+    return r
+
 def http_scan(data,host, scan_on_https):
     sess = requests.session()
     sess.verify = False
@@ -40,7 +55,7 @@ def http_scan(data,host, scan_on_https):
 
     print("initial req", flush=True)
     try:
-        response = sess.get(f"{schema}://{host}", **default_request_config)
+        response = secure_req(sess, f"{schema}://{host}", **default_request_config)
     except:
         return
 
@@ -107,7 +122,7 @@ def check_dumb_redirection(data, host, schema, sess):
     # (if it performs local redirection, then it should have some sort of logic behind it)
 
     try:
-        response = sess.get(f"{schema}://{host}/{uuid.uuid4()}", **default_request_config)
+        response = secure_req(sess, f"{schema}://{host}/{uuid.uuid4()}", **default_request_config)
     except:
         return True
 
@@ -135,7 +150,7 @@ def follow_local_redirections(schema, host, location, response, sess, max_depth=
 
     if new_location.startswith(f"{schema}://{host}/") or new_location == f"{schema}://{host}":
         try:
-            response = sess.get(new_location, **default_request_config)
+            response = secure_req(sess, new_location, **default_request_config)
         except:
             return None, "conn-error"
         if response.headers.get("Location"):
@@ -175,7 +190,7 @@ def __is_external_link(link, host):
 # TODO: follow redirections
 def nodeinfo_fetch(data, host, schema, sess):
     try:
-        response = sess.get(f"{schema}://{host}/.well-known/nodeinfo", **default_request_config)
+        response = secure_req(sess, f"{schema}://{host}/.well-known/nodeinfo", **default_request_config)
     except:
         return
 
@@ -207,7 +222,7 @@ def nodeinfo_fetch(data, host, schema, sess):
             continue
 
         try:
-            response = sess.get(link, **default_request_config).json()
+            response = secure_req(sess, link, **default_request_config).json()
 
             # some asserts to be sure
             assert(isinstance(response, dict))
@@ -223,7 +238,7 @@ def nodeinfo_fetch(data, host, schema, sess):
 
 def __matrix_wellknown_check(data, host, schema, sess):
     try:
-        response = sess.get(f"{schema}://{host}/.well-known/matrix/client", **default_request_config)
+        response = secure_req(sess, f"{schema}://{host}/.well-known/matrix/client", **default_request_config)
     except:
         return f"{schema}://{host}/"
 
@@ -255,7 +270,7 @@ def matrix_chat_check(data, host, schema, sess):
         base_url = f"{schema}://{host}/"
     
     try:
-        response = sess.get(f"{base_url}/_matrix/client/versions", **default_request_config).json()
+        response = secure_req(sess, f"{base_url}/_matrix/client/versions", **default_request_config).json()
     except:
         return
 
@@ -320,7 +335,7 @@ def home_page_scan(data, host, schema, sess, response):
 
 def robots_txt_scan(data, host, schema, sess):
     try:
-        response = sess.get(f"{schema}://{host}/robots.txt", **default_request_config)
+        response = secure_req(sess, f"{schema}://{host}/robots.txt", **default_request_config)
     except:
         return
     
